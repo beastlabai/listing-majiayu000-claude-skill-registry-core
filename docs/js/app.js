@@ -455,6 +455,16 @@ function switchView(view) {
     }
 }
 
+function uniqueSkillResults(results) {
+    const seen = new Set();
+    return results.filter(({ item }) => {
+        const key = item.canonical_id || `${item.i}|${item.b || 'main'}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
 function search(query) {
     const startTime = performance.now();
 
@@ -488,6 +498,9 @@ function search(query) {
         results.sort((a, b) => a.item.n.localeCompare(b.item.n));
     }
 
+    // Keep the first matching source after relevance/explicit sorting. A
+    // group's representative may not match the user's query or filters.
+    results = uniqueSkillResults(results);
     state.results = results;
 
     const endTime = performance.now();
@@ -669,6 +682,7 @@ async function searchWithFiltersOnly() {
         results.sort((a, b) => a.item.n.localeCompare(b.item.n));
     }
 
+    results = uniqueSkillResults(results);
     state.results = results;
 
     const endTime = performance.now();
