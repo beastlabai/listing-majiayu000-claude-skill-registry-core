@@ -53,6 +53,8 @@ const CATEGORY_COLORS = {
 let state = {
     index: null,
     fullIndex: null,
+    fullSearchPromise: null,
+    fullSearchError: null,
     fuse: null,
     featured: [],
     plugins: [],
@@ -403,20 +405,41 @@ async function getFilterBaseSkills() {
 }
 
 async function activateFullSearch() {
+    if (state.fullSearchPromise) return state.fullSearchPromise;
+    state.fullSearchError = null;
     elements.searchAllBtn.disabled = true;
     elements.searchAllBtn.textContent = 'Loading all shards…';
     elements.searchScope.textContent = 'Loading the complete offline search index…';
-    try {
-        state.index = await loadFullSearchIndex();
-        state.fuse = new Fuse(state.index.s, CONFIG.FUSE_OPTIONS);
-        updateSearchScopeDisplay();
-        if (state.currentQuery) search(state.currentQuery);
-        else if (hasActiveFilters()) await searchWithFiltersOnly();
-    } catch (error) {
-        elements.searchScope.textContent = `Full search failed: ${error.message}`;
-        elements.searchAllBtn.textContent = 'Retry Search all';
-        elements.searchAllBtn.disabled = false;
-    }
+    state.fullSearchPromise = (async () => {
+        try {
+            state.index = await loadFullSearchIndex();
+            state.fuse = new Fuse(state.index.s, CONFIG.FUSE_OPTIONS);
+            updateSearchScopeDisplay();
+            // Use the current query: it may have changed or been cleared while loading.
+            if (state.currentView === 'search') {
+                if (state.currentQuery) search(state.currentQuery);
+                else if (hasActiveFilters()) await searchWithFiltersOnly();
+            }
+            return true;
+        } catch (error) {
+            state.fullSearchError = error;
+            elements.searchScope.textContent = `Full search failed: ${error.message}`;
+            elements.searchAllBtn.textContent = 'Retry Search all';
+            elements.searchAllBtn.disabled = false;
+            if (state.currentQuery && state.results.length === 0) {
+                elements.emptyState.classList.remove('hidden');
+            }
+            return false;
+        } finally {
+            state.fullSearchPromise = null;
+        }
+    })();
+    return state.fullSearchPromise;
+}
+
+async function waitForSearchCompletion() {
+    const completed = await state.fullSearchPromise;
+    return completed !== false && !state.fullSearchError && state.currentView === 'search';
 }
 
 function switchView(view) {
@@ -467,6 +490,10 @@ function uniqueSkillResults(results) {
 
 function search(query) {
     const startTime = performance.now();
+    if (state.fullSearchError) {
+        state.fullSearchError = null;
+        updateSearchScopeDisplay();
+    }
 
     state.currentQuery = query.trim().toLowerCase();
     state.displayedCount = 0;
@@ -478,6 +505,7 @@ function search(query) {
         return;
     }
 
+    state.currentView = 'search';
     elements.featuredSection.classList.add('hidden');
     elements.leaderboardSection.classList.add('hidden');
     elements.statsSection.classList.add('hidden');
@@ -511,8 +539,13 @@ function search(query) {
 
     if (results.length === 0) {
         elements.searchResults.classList.add('hidden');
-        elements.emptyState.classList.remove('hidden');
         elements.loadMore.classList.add('hidden');
+        if (state.index.isLite && state.currentQuery.length >= CONFIG.FUSE_OPTIONS.minMatchCharLength) {
+            elements.emptyState.classList.add('hidden');
+            void activateFullSearch();
+        } else {
+            elements.emptyState.classList.remove('hidden');
+        }
     } else {
         elements.emptyState.classList.add('hidden');
         displayResults();
@@ -526,6 +559,10 @@ elements.searchInput.addEventListener('input', debounce((e) => {
 elements.searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         search(e.target.value);
+        // Fuzzy highlighted matches can hide an exact match elsewhere.
+        if (state.index.isLite && state.currentQuery.length >= CONFIG.FUSE_OPTIONS.minMatchCharLength) {
+            void activateFullSearch();
+        }
     }
 });
 
@@ -669,6 +706,7 @@ function hasActiveFilters() {
 
 async function searchWithFiltersOnly() {
     const startTime = performance.now();
+    state.currentView = 'search';
     state.displayedCount = 0;
 
     const baseSkills = await getFilterBaseSkills();
